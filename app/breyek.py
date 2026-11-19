@@ -1,5 +1,5 @@
 """
-Breyek 2.0 - eye break assistant for Windows (20-20-20 rule). No AI, no machine learning.
+Breyek - eye break assistant for Windows (20-20-20 rule). No AI, no machine learning.
 
   WAITING  timer is full and still; starts on the first input.
   RUNNING  counts down 20 min of real use. Keyboard, mouse, or a moving screen (video) count as use.
@@ -54,10 +54,10 @@ except ImportError:
     sw = None
 import pro                          # Breyek Pro: license check, call detection, sounds
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 DEMO = "demo" in os.path.basename(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]).lower() \
     or "--test" in sys.argv
-APP_NAME = "Breyek-2.0" + ("-Demo" if DEMO else "")
+APP_NAME = "Breyek-2.0" + ("-Demo" if DEMO else "")   # internal: settings folder + autostart entry (kept for old users)
 ICON_FILE = "breyek-demo.ico" if DEMO else "breyek.ico"
 
 # Developers' server for shared usage data. Empty = nothing is ever sent anywhere.
@@ -954,6 +954,11 @@ class BreyekApp:
         self.base_timing = self.work_s, self.idle_s, self.break_s = work_s, idle_s, break_s
         self.cfg = load_config()
         self.license = pro.ProLicense(CONFIG_DIR)
+        try:
+            if is_autostart_enabled():
+                set_autostart(True)              # the .exe may have been renamed or moved: point autostart at it
+        except (OSError, RuntimeError):
+            pass
         self.lang = self.cfg["language"]
         self.usage = UsageStats(self.cfg)
 
@@ -1278,7 +1283,7 @@ class BreyekApp:
         self.btn_quit.pack(side="right")
 
     def apply_language(self):
-        self.root.title("Breyek 2.0" + (" (demo)" if DEMO else ""))
+        self.root.title(f"Breyek {VERSION.rsplit('.', 1)[0]}" + (" Pro" if self.pro else "") + (" (demo)" if DEMO else ""))
         for tab, key in ((self.tab_settings, "tab_settings"), (self.tab_stats, "tab_stats"), (self.tab_pro, "tab_pro"),
                          (self.tab_privacy, "tab_privacy"), (self.tab_sponsors, "tab_sponsors")):
             self.tabs.tab(tab, text=self.t(key))

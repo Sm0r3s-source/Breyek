@@ -3,7 +3,7 @@ Breyek 3.0.0 - akių pertraukų asistentas (be DI ir be mašininio mokymosi)
 Paleidimas iš kodo:  py -m pip install -r requirements.txt
                      py breyek.py           (20 min / 5 min / 1 min)
                      py breyek.py --test    (demo: 20 s / 5 s / 10 s)
-.exe sukūrimas:      dukart spustelėti build.bat -> dist\Breyek-2.0.exe ir dist\Breyek-2.0-Demo.exe
+.exe sukūrimas:      dukart spustelėti build.bat -> dist\Breyek.exe ir dist\Breyek-Demo.exe
 Avarinis išėjimas pertraukos metu: laikyti Ctrl+Alt+Shift ir paspausti Q.
 
 Visi failai turi būti viename aplanke: breyek.py, screen_activity.py, aplankas lang/ (40 kalbų),

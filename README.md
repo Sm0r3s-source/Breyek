@@ -11,7 +11,7 @@ Emergency exit during a break: **Ctrl + Alt + Shift + Q**
 
 ## Download
 
-Get the latest `Breyek-2.0.exe` from [Releases](../../releases).
+Get the latest `Breyek.exe` from [Releases](../../releases).
 
 ## Build from source
 

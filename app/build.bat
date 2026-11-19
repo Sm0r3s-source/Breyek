@@ -12,17 +12,17 @@ echo === Installing build tools ===
 %PY% -m pip install --upgrade pyinstaller -r requirements.txt || goto :error
 
 echo.
-echo === Building Breyek-2.0.exe (full: 20 min / 5 min / 1 min) ===
-call :build Breyek-2.0 breyek.ico || goto :error
+echo === Building Breyek.exe (full: 20 min / 5 min / 1 min) ===
+call :build Breyek breyek.ico || goto :error
 
 echo.
-echo === Building Breyek-2.0-Demo.exe (demo: 20 s / 5 s / 10 s) ===
-call :build Breyek-2.0-Demo breyek-demo.ico || goto :error
+echo === Building Breyek-Demo.exe (demo: 20 s / 5 s / 10 s) ===
+call :build Breyek-Demo breyek-demo.ico || goto :error
 
 echo.
 echo Done. Your files are in the "dist" folder:
-echo    dist\Breyek-2.0.exe
-echo    dist\Breyek-2.0-Demo.exe
+echo    dist\Breyek.exe
+echo    dist\Breyek-Demo.exe
 pause
 exit /b 0
 
