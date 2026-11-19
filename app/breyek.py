@@ -32,7 +32,7 @@ import webbrowser
 import uuid
 from ctypes import wintypes
 from enum import Enum, auto
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
@@ -52,8 +52,9 @@ try:
     import screen_activity as sw    # screen movement detection (no data, no AI)
 except ImportError:
     sw = None
+import pro                          # Breyek Pro: license check, call detection, sounds
 
-VERSION = "2.5.0"
+VERSION = "3.0.0"
 DEMO = "demo" in os.path.basename(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]).lower() \
     or "--test" in sys.argv
 APP_NAME = "Breyek-2.0" + ("-Demo" if DEMO else "")
@@ -64,7 +65,7 @@ TELEMETRY_URL = "https://breyek-api.breyek-api.workers.dev"
 # One inbox for bug reports, support and partners; the subject tag tells them apart.
 CONTACT_EMAIL = "breyek@protonmail.com"
 PRIVACY_URL = "https://breyek-api.breyek-api.workers.dev/privacy"
-POLICY_VERSION = 1          # raise when the policy changes: everyone is asked to agree again
+POLICY_VERSION = 2          # raise when the policy changes: everyone is asked to agree again
 # Sponsors shown during the break and on the Sponsors tab: (name, logo file without _light/_dark.png)
 SPONSORS = [("Lietuvos inžinerijos kolegija", "sponsor_lik")]
 
@@ -80,8 +81,19 @@ STATS_PATH = os.path.join(CONFIG_DIR, "stats.json")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULTS = {"language": "lt", "corner_timer": True, "screen_watch": True, "theme": "system",
             "eye_filter": False, "filter_strength": 20, "share_data": False, "policy": 0,
-            "pause_media": True, "keep_stats": True}
-THEMES = ("system", "light", "dark")
+            "pause_media": True, "keep_stats": True,
+            # Breyek Pro
+            "preset": "standard", "work_min": 20, "break_min": 1, "idle_min": 5, "smart_pause": True,
+            "snooze": True, "filter_auto": False, "filter_from": 20, "filter_to": 7, "exercises": True,
+            "sound": "chime", "snooze_day": "", "snooze_used": 0}
+THEMES = ("system", "light", "dark", "midnight", "forest", "paper")
+PRO_THEMES = {"midnight", "forest", "paper"}
+DARK_THEMES = {"dark", "midnight", "forest"}
+PRESETS = {"standard": (20, 1, 5), "pomodoro": (25, 5, 5), "deep": (50, 10, 5)}     # work, break, idle (min)
+LIMITS = {"work_min": (5, 120), "break_min": (1, 15), "idle_min": (1, 30), "filter_from": (0, 23),
+          "filter_to": (0, 23), "snooze_used": (0, 99)}
+HOLD_MAX_S, SNOOZE_S, SNOOZES_PER_DAY, WARN_S = 600, 300, 2, 30
+EXERCISES = ("ex_dot", "ex_far", "ex_blink", "ex_palm", "ex_neck")         # Pro break, one every 12 s
 FILTER_MIN, FILTER_MAX = 0, 100
 FILTER_MAX_ALPHA = 0.5
 FILTER_COLOR = "#ff8c1a"
@@ -93,6 +105,16 @@ PALETTES = {
              "danger": "#ff8f8f"},
     "light": {"bg": "#f3e9e4", "panel": "#fbf6f2", "line": "#dccbc2", "fg": "#2a2026",
               "muted": "#7b6a6f", "accent": "#b8621b", "accent_fg": "#fbf6f2", "track": "#e6d5cb",
+              "danger": "#b3261e"},
+    # Pro themes
+    "midnight": {"bg": "#141a26", "panel": "#1c2433", "line": "#2c3648", "fg": "#e6e9f0",
+                 "muted": "#8f9ab0", "accent": "#e8b45a", "accent_fg": "#141a26", "track": "#2a3344",
+                 "danger": "#ff8f8f"},
+    "forest": {"bg": "#161e19", "panel": "#1f2922", "line": "#2f3b32", "fg": "#e7eee6",
+               "muted": "#94a396", "accent": "#a8d48f", "accent_fg": "#161e19", "track": "#2b372e",
+               "danger": "#ff8f8f"},
+    "paper": {"bg": "#eceee7", "panel": "#f8f9f4", "line": "#d3d8cc", "fg": "#1f2622",
+              "muted": "#66705f", "accent": "#3f7a4d", "accent_fg": "#f8f9f4", "track": "#dfe4d8",
               "danger": "#b3261e"},
 }
 OVERLAY = {"bg": "#15101a", "title": "#b9a7c2", "timer": "#f6ebe1", "tip": "#f0b878", "small": "#8e8093"}
@@ -154,6 +176,17 @@ def load_config():
     for key in ("corner_timer", "screen_watch", "eye_filter", "share_data", "pause_media", "keep_stats"):
         cfg[key] = bool(cfg[key])
     cfg["policy"] = cfg["policy"] if isinstance(cfg["policy"], int) else 0
+    for key in ("smart_pause", "snooze", "filter_auto", "exercises"):
+        cfg[key] = bool(cfg[key])
+    for key, (lo, hi) in LIMITS.items():
+        try:
+            cfg[key] = max(lo, min(hi, int(cfg[key])))
+        except (TypeError, ValueError):
+            cfg[key] = DEFAULTS[key]
+    if cfg["preset"] not in (*PRESETS, "custom"):
+        cfg["preset"] = "standard"
+    if cfg["sound"] not in pro.SOUNDS:
+        cfg["sound"] = DEFAULTS["sound"]
     try:
         cfg["filter_strength"] = max(FILTER_MIN, min(FILTER_MAX, int(cfg["filter_strength"])))
     except (TypeError, ValueError):
@@ -483,10 +516,11 @@ CAT_COLORS = {"work": "#f0a35e", "browse": "#d6b47c", "game": "#e0788c", "watch"
 
 
 class ActivityStats:
-    """Seconds per activity type per day, kept 60 days in stats.json. Never sent anywhere."""
+    """Seconds per activity type per day in stats.json: 60 days (Pro: a year). Only totals are ever shared."""
 
     def __init__(self, cfg):
         self.cfg, self.days, self._unsaved = cfg, {}, 0.0
+        self.keep_days = 60                     # Pro: 365
         try:
             with open(STATS_PATH, "r", encoding="utf-8") as f:
                 self.days = json.load(f).get("days", {})
@@ -511,14 +545,23 @@ class ActivityStats:
             d["breaks"] = d.get("breaks", 0) + 1
             self.save()
 
-    def week(self):
+    def last(self, n):
         today = datetime.date.today()
         return [(today - datetime.timedelta(days=i), self.day(today - datetime.timedelta(days=i)))
-                for i in range(6, -1, -1)]
+                for i in range(n - 1, -1, -1)]
+
+    def export_csv(self, path):
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", *[f"{c}_min" for c in CATS], "breaks"])
+            for day in sorted(self.days):
+                d = self.days[day]
+                w.writerow([day, *[round(d.get(c, 0) / 60) for c in CATS], d.get("breaks", 0)])
 
     def save(self):
         self._unsaved = 0.0
-        oldest = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
+        oldest = (datetime.date.today() - datetime.timedelta(days=self.keep_days)).isoformat()
         self.days = {k: v for k, v in self.days.items() if k >= oldest}
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -643,7 +686,7 @@ class UsageStats:
 def load_image(name, theme):
     """Sponsor logo for a light or dark background (PNG next to the script / inside the exe)."""
     try:
-        return tk.PhotoImage(file=resource_path(f"{name}_{'light' if theme == 'dark' else 'dark'}.png"))
+        return tk.PhotoImage(file=resource_path(f"{name}_{'light' if theme in DARK_THEMES else 'dark'}.png"))
     except tk.TclError:
         return None
 
@@ -711,8 +754,13 @@ class Overlay:
         self.timer.pack(pady=(0, int(h * 0.045)))
         self.tip.pack()
         self._set(self.title, title_text, "txt", 0.035, o["title"])
+        self.dot_w, self.dot_h = int(w * 0.36), int(h * 0.16)
+        self.dot = tk.Canvas(box, width=self.dot_w, height=self.dot_h, bg=o["bg"], highlightthickness=0)
+        r = max(6, int(h * 0.012))
+        self.dot_item = self.dot.create_oval(0, 0, 2 * r, 2 * r, fill=o["tip"], outline="")
+        self.dot_r, self.dot_on, self.dot_t = r, False, 0.0
 
-        self.logos = [img for img in (load_image(f, "dark") for _, f in SPONSORS) if img]
+        self.logos = [img for img in (load_image(f, "dark") for _, f in SPONSORS) if img] if sponsor_text else []
         if self.logos:
             foot = tk.Frame(self.win, bg=o["bg"])
             foot.place(relx=0.5, rely=0.93, anchor="s")
@@ -735,9 +783,30 @@ class Overlay:
             label.configure(image="", text=text, fg=color, font=(FONT_NUM if kind == "num" else FONT_TXT, -px),
                             wraplength=wrap or 0, justify="center")
 
-    def update(self, timer_text, tip_text):
+    def update(self, timer_text, tip_text, dot=False):
         self._set(self.timer, timer_text, "num", 0.24, self.o["timer"])
         self._set(self.tip, tip_text, "txt", 0.03, self.o["tip"], int(self.w * 0.55))
+        if dot != self.dot_on:
+            self.dot_on = dot
+            if dot:
+                self.dot.pack(pady=(int(self.h * 0.03), 0))
+                self._move_dot()
+            else:
+                self.dot.pack_forget()
+
+    def _move_dot(self):
+        """Slow figure-eight for the eyes to follow."""
+        if not self.dot_on:
+            return
+        self.dot_t += 0.025
+        x = (0.5 + 0.45 * math.sin(self.dot_t)) * self.dot_w
+        y = (0.5 + 0.38 * math.sin(2 * self.dot_t)) * self.dot_h
+        r = self.dot_r
+        try:
+            self.dot.coords(self.dot_item, x - r, y - r, x + r, y + r)
+            self.win.after(33, self._move_dot)
+        except tk.TclError:
+            pass
 
     def keep_on_top(self):
         try:
@@ -882,8 +951,9 @@ class BreyekApp:
     RING = 150              # diameter of the countdown ring, px at 96 dpi
 
     def __init__(self, work_s, idle_s, break_s, start_minimized=False):
-        self.work_s, self.idle_s, self.break_s = work_s, idle_s, break_s
+        self.base_timing = self.work_s, self.idle_s, self.break_s = work_s, idle_s, break_s
         self.cfg = load_config()
+        self.license = pro.ProLicense(CONFIG_DIR)
         self.lang = self.cfg["language"]
         self.usage = UsageStats(self.cfg)
 
@@ -916,6 +986,11 @@ class BreyekApp:
         self.media = MediaPause()
         self.stats = ActivityStats(self.cfg)
         self.usage.stats = self.stats
+        self.stats_n = 7                              # days shown in the chart (Pro: 7 or 30)
+        self.hold_since = None                        # Pro smart pause: break waiting since
+        self._busy, self._next_busy = False, 0.0
+        self.toast = None
+        self.ex_index, self.current_dot, self._lic_dirty = 0, False, False
         self.last_kb = self.last_mouse = 0.0          # when the keyboard / the mouse was last used
         self._input_at, self._cursor = 0.0, cursor_pos()
         self.fullscreen, self._next_fs, self._next_chart = False, 0.0, 0.0
@@ -926,10 +1001,11 @@ class BreyekApp:
         self._next_screen = 0.0
 
         self._build_window()
+        self._apply_pro()
         self.corner = CornerTimer(self.root, self.scale)
         self.apply_theme()
         self.apply_language()
-        self.root.after(150, lambda: set_titlebar(self.root, self._theme_applied == "dark",
+        self.root.after(150, lambda: set_titlebar(self.root, self._theme_applied in DARK_THEMES,
                                                   self.c["bg"], self.c["fg"]))   # once the window exists
         if start_minimized:
             self.root.after(100, self.root.iconify)
@@ -977,7 +1053,8 @@ class BreyekApp:
         self.tab_privacy = ttk.Frame(self.tabs, padding=pad, style="Panel.TFrame")
         self.tab_sponsors = ttk.Frame(self.tabs, padding=pad, style="Panel.TFrame")
         self.tab_stats = ttk.Frame(self.tabs, padding=pad, style="Panel.TFrame")
-        for tab in (self.tab_settings, self.tab_stats, self.tab_privacy, self.tab_sponsors):
+        self.tab_pro = ttk.Frame(self.tabs, padding=pad, style="Panel.TFrame")
+        for tab in (self.tab_settings, self.tab_stats, self.tab_pro, self.tab_privacy, self.tab_sponsors):
             self.tabs.add(tab)
 
         # --- settings tab
@@ -1063,6 +1140,14 @@ class BreyekApp:
         st = self.tab_stats
         self.lbl_today = ttk.Label(st, style="PanelStrong.TLabel", wraplength=wrap, justify="left")
         self.lbl_today.pack(fill="x")
+        views = ttk.Frame(st, style="Panel.TFrame")
+        views.pack(fill="x", pady=(self.px(8), 0))
+        self.lnk_7 = self._link(views, lambda: self._stats_view(7))
+        self.lnk_30 = self._link(views, lambda: self._stats_view(30))
+        self.lnk_csv = self._link(views, self._export_csv)
+        self.lnk_7.pack(side="left")
+        self.lnk_30.pack(side="left", padx=(self.px(12), 0))
+        self.lnk_csv.pack(side="right")
         self.chart_w, self.chart_h = wrap, self.px(116)
         self.chart = tk.Canvas(st, width=self.chart_w, height=self.chart_h, highlightthickness=0, bd=0)
         self.chart.pack(pady=(self.px(10), self.px(8)))
@@ -1091,6 +1176,83 @@ class BreyekApp:
         self.btn_stats_delete.pack(anchor="w", pady=(self.px(8), 0))
         self.tabs.bind("<<NotebookTabChanged>>", lambda e: (self._draw_stats(), self._fit()))
 
+        # --- pro tab
+        pr, px = self.tab_pro, self.px
+        self.lbl_pro_state = ttk.Label(pr, style="PanelStrong.TLabel", wraplength=wrap, justify="left")
+        self.lbl_pro_state.pack(fill="x")
+        self.lbl_pro_pitch = ttk.Label(pr, style="PanelMuted.TLabel", wraplength=wrap, justify="left")
+        self.lbl_pro_pitch.pack(fill="x", pady=(px(6), 0))
+        self.btn_buy = ttk.Button(pr, style="Accent.TButton", command=lambda: self._open(pro.PRO_BUY_URL))
+        self.btn_buy.pack(anchor="w", pady=(px(10), 0))
+        keyrow = self.keyrow = ttk.Frame(pr, style="Panel.TFrame")
+        keyrow.pack(fill="x", pady=(px(10), 0))
+        self.lbl_key = ttk.Label(keyrow, style="Panel.TLabel")
+        self.lbl_key.pack(side="left")
+        self.var_key = tk.StringVar()
+        self.ent_key = ttk.Entry(keyrow, textvariable=self.var_key, width=18)
+        self.ent_key.pack(side="left", fill="x", expand=True, padx=(px(8), px(8)))
+        self.ent_key.bind("<Return>", lambda e: self._on_key())
+        self.btn_key = ttk.Button(keyrow, style="Panel.TButton", command=self._on_key)
+        self.btn_key.pack(side="left")
+        self.lnk_manage = self._link(pr, lambda: self._open(pro.PRO_PORTAL_URL))
+        self.lnk_manage.pack(anchor="w", pady=(px(8), 0))
+        self.pro_sep = ttk.Separator(pr)
+        self.pro_sep.pack(fill="x", pady=(px(14), px(10)))
+
+        box = self.pro_box = ttk.Frame(pr, style="Panel.TFrame")
+        box.pack(fill="x")
+        self.lbl_locked = ttk.Label(box, style="PanelMuted.TLabel")
+        self.lbl_locked.pack(anchor="w", pady=(0, px(6)))
+        g = self.pro_grid = ttk.Frame(box, style="Panel.TFrame")
+        g.pack(fill="x")
+        self.lbl_timers = ttk.Label(g, style="Panel.TLabel")
+        self.lbl_timers.grid(row=0, column=0, sticky="w", padx=(0, px(10)))
+        self.cmb_preset = ttk.Combobox(g, state="readonly", width=20)
+        self.cmb_preset.grid(row=0, column=1, columnspan=2, sticky="ew")
+        self.cmb_preset.bind("<<ComboboxSelected>>", self._on_preset)
+        self.time_vars, self.time_spins, self.time_lbls, self.unit_lbls = {}, {}, {}, []
+        for row, key in enumerate(("work_min", "break_min", "idle_min"), start=1):
+            lbl = ttk.Label(g, style="PanelMuted.TLabel")
+            lbl.grid(row=row, column=0, sticky="w", padx=(px(12), px(10)), pady=(px(6), 0))
+            var = tk.StringVar(value=str(self.cfg[key]))
+            spin = ttk.Spinbox(g, from_=LIMITS[key][0], to=LIMITS[key][1], width=4, textvariable=var,
+                               command=self._on_times, justify="right")
+            spin.grid(row=row, column=1, sticky="w", pady=(px(6), 0))
+            unit = ttk.Label(g, style="PanelMuted.TLabel")
+            unit.grid(row=row, column=2, sticky="w", padx=(px(6), 0), pady=(px(6), 0))
+            self.unit_lbls.append(unit)
+            for ev in ("<Return>", "<FocusOut>", "<KP_Enter>"):
+                spin.bind(ev, self._on_times)
+            self.time_vars[key], self.time_spins[key], self.time_lbls[key] = var, spin, lbl
+        g.columnconfigure(2, weight=1)
+        self.pro_checks = {}
+        for key in ("smart_pause", "snooze", "filter_auto", "exercises"):
+            var = tk.BooleanVar(value=self.cfg[key])
+            chk = ttk.Checkbutton(box, variable=var, style="Wrap.TCheckbutton",
+                                  command=lambda k=key, v=var: self._on_pro_check(k, v))
+            chk.pack(anchor="w", pady=(px(8), 0))
+            self.pro_checks[key] = (var, chk)
+            if key == "filter_auto":                       # hours of the evening filter
+                hrs = ttk.Frame(box, style="Panel.TFrame")
+                hrs.pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+                self.hour_vars, self.hour_spins = {}, {}
+                for i, hk in enumerate(("filter_from", "filter_to")):
+                    hv = tk.StringVar(value=f"{self.cfg[hk]:02d}")
+                    hs = ttk.Spinbox(hrs, from_=0, to=23, width=3, textvariable=hv, wrap=True, format="%02.0f",
+                                     command=self._on_hours, justify="right")
+                    hs.pack(side="left")
+                    for ev in ("<Return>", "<FocusOut>", "<KP_Enter>"):
+                        hs.bind(ev, self._on_hours)
+                    ttk.Label(hrs, text=":00" + ("  –  " if i == 0 else ""), style="Panel.TLabel").pack(side="left")
+                    self.hour_vars[hk], self.hour_spins[hk] = hv, hs
+        snd = ttk.Frame(box, style="Panel.TFrame")
+        snd.pack(fill="x", pady=(px(10), 0))
+        self.lbl_sound = ttk.Label(snd, style="Panel.TLabel")
+        self.lbl_sound.pack(side="left", padx=(0, px(10)))
+        self.cmb_sound = ttk.Combobox(snd, state="readonly", width=14)
+        self.cmb_sound.pack(side="left")
+        self.cmb_sound.bind("<<ComboboxSelected>>", self._on_sound)
+
         # --- sponsors tab
         sp = self.tab_sponsors
         self.lbl_thanks = ttk.Label(sp, style="PanelStrong.TLabel", wraplength=wrap, justify="left")
@@ -1117,7 +1279,7 @@ class BreyekApp:
 
     def apply_language(self):
         self.root.title("Breyek 2.0" + (" (demo)" if DEMO else ""))
-        for tab, key in ((self.tab_settings, "tab_settings"), (self.tab_stats, "tab_stats"),
+        for tab, key in ((self.tab_settings, "tab_settings"), (self.tab_stats, "tab_stats"), (self.tab_pro, "tab_pro"),
                          (self.tab_privacy, "tab_privacy"), (self.tab_sponsors, "tab_sponsors")):
             self.tabs.tab(tab, text=self.t(key))
         self.chk_autostart.configure(text=self.t("autostart"))
@@ -1128,7 +1290,8 @@ class BreyekApp:
         self.lbl_strength.configure(text=self.t("filter_strength"))
         self.lbl_theme.configure(text=self.t("theme"))
         self.lbl_lang.configure(text=self.t("language"))
-        self.cmb_theme.configure(values=[self.t("theme_" + c) for c in THEMES])
+        self.cmb_theme.configure(values=[self.t("theme_" + c) + (" (Pro)" if c in PRO_THEMES and not self.pro else "")
+                                         for c in THEMES])
         self.cmb_theme.current(THEMES.index(self.cfg["theme"]))
         self.chk_share.configure(text=self.t("share_data"))
         self.lbl_share_info.configure(text=self.t("share_info") + "\n\n" + self.t("share_activity"))
@@ -1147,6 +1310,29 @@ class BreyekApp:
         self.btn_stats_delete.configure(text=self.t("stats_delete"))
         for cat, (dot, name, value) in self.legend.items():
             name.configure(text=self.t("cat_" + cat))
+        self.lnk_7.configure(text=self.t("stats_7"))
+        self.lnk_30.configure(text=self.t("stats_30") + ("" if self.pro else " (Pro)"))
+        self.lnk_csv.configure(text=self.t("stats_export") + ("" if self.pro else " (Pro)"))
+        self.lbl_pro_state.configure(text=self.t("pro_active" if self.pro else "pro_free"))
+        self.lbl_pro_pitch.configure(text=self.t("pro_pitch"))
+        self.btn_buy.configure(text=self.t("pro_buy"))
+        self.lbl_key.configure(text=self.t("pro_key"))
+        self.btn_key.configure(text=self.t("pro_remove" if self.pro else "pro_activate"))
+        self.lnk_manage.configure(text=self.t("pro_manage"))
+        self.lbl_locked.configure(text=self.t("pro_locked"))
+        self.lbl_timers.configure(text=self.t("pro_timers"))
+        self.cmb_preset.configure(values=[self.t("preset_" + k) for k in (*PRESETS, "custom")])
+        self.cmb_preset.current([*PRESETS, "custom"].index(self.cfg["preset"]))
+        for key, lbl in self.time_lbls.items():
+            lbl.configure(text=self.t("t_" + key[:-4]))
+        unit = self.t("hm").split("{m}")[-1].strip() or "min"           # "min" in the user's language
+        for u in self.unit_lbls:
+            u.configure(text=unit)
+        for key, (var, chk) in self.pro_checks.items():
+            chk.configure(text=self.t(key))
+        self.lbl_sound.configure(text=self.t("sound"))
+        self.cmb_sound.configure(values=[self.t("sound_" + k) for k in pro.SOUNDS])
+        self.cmb_sound.current(pro.SOUNDS.index(self.cfg["sound"]))
         self.lbl_hint.configure(text=self.t("hint_close"))
         self.btn_quit.configure(text=self.t("quit"))
         self._update_share_state()
@@ -1225,15 +1411,17 @@ class BreyekApp:
         messagebox.showinfo("Breyek", self.t("stats_deleted"))
 
     def _draw_stats(self):
-        """Last 7 days as stacked bars (hours per activity type) + legend with weekly totals."""
+        """Last 7 (Pro: 30) days as stacked bars (hours per activity type) + legend with the totals."""
         if not hasattr(self, "chart"):
             return
-        c, cv, hm = self.c, self.chart, self.t("hm")
-        week = self.stats.week()
+        c, cv, hm, n = self.c, self.chart, self.t("hm"), self.stats_n
+        for lnk, v in ((self.lnk_7, 7), (self.lnk_30, 30)):
+            lnk.configure(style="LinkOn.TLabel" if v == n else "Link.TLabel")
+        week = self.stats.last(n)
         totals = [sum(d.get(k, 0) for k in CATS) for _, d in week]
         today = week[-1][1]
         self.lbl_today.configure(text=self.t("stats_today", time=fmt_hm(totals[-1], hm), breaks=today.get("breaks", 0)))
-        self.lbl_week.configure(text=self.t("stats_week", time=fmt_hm(sum(totals), hm)))
+        self.lbl_week.configure(text=self.t("stats_week" if n == 7 else "stats_month", time=fmt_hm(sum(totals), hm)))
         for cat, (dot, name, value) in self.legend.items():
             dot.configure(bg=c["panel"])
             dot.delete("all")
@@ -1254,7 +1442,7 @@ class BreyekApp:
             cv.create_line(left, y, W, y, fill=c["line"])
             cv.create_text(left - self.px(6), y, text=f"{hour} h", anchor="e", fill=c["muted"], font=small)
         names = self.t("weekdays").split(",")
-        slot = (W - left) / 7
+        slot = (W - left) / n
         bar = slot * 0.56
         for i, (date, d) in enumerate(week):
             x0 = left + i * slot + (slot - bar) / 2
@@ -1264,9 +1452,209 @@ class BreyekApp:
                 if secs >= 30:
                     cv.create_rectangle(x0, y_of(acc + secs), x0 + bar, y_of(acc), fill=CAT_COLORS[cat], outline="")
                     acc += secs
-            label = names[date.weekday()] if len(names) == 7 else date.strftime("%d")
-            cv.create_text(x0 + bar / 2, H - bottom + self.px(9), text=label, font=small,
-                           fill=c["fg"] if i == 6 else c["muted"])
+            if n == 7:
+                label = names[date.weekday()] if len(names) == 7 else date.strftime("%d")
+            else:
+                label = str(date.day) if (n - 1 - i) % 5 == 0 else ""     # every 5th day, ending today
+            if label:
+                cv.create_text(x0 + bar / 2, H - bottom + self.px(9), text=label, font=small,
+                               fill=c["fg"] if i == n - 1 else c["muted"])
+
+    # ------------------------------------------------- Breyek Pro
+    @property
+    def pro(self):
+        return self.license.active
+
+    def _apply_pro(self):
+        """Turns the Pro features on or off everywhere (after a key is added, removed or re-checked)."""
+        on, px = self.pro, self.px
+        if on and not DEMO:
+            self.work_s, self.break_s, self.idle_s = (self.cfg[k] * 60 for k in ("work_min", "break_min", "idle_min"))
+        else:
+            self.work_s, self.idle_s, self.break_s = self.base_timing
+        self.stats.keep_days = 365 if on else 60
+        if not on:
+            self.stats_n = 7
+            if self.cfg["theme"] in PRO_THEMES:
+                self.cfg["theme"] = "system"
+                save_config(self.cfg)
+                if self._theme_applied:
+                    self.apply_theme()
+        for var, chk in self.pro_checks.values():
+            chk.state(["!disabled"] if on else ["disabled"])
+        for w in (*self.time_spins.values(), *self.hour_spins.values()):
+            custom = w not in self.time_spins.values() or self.cfg["preset"] == "custom"
+            w.state(["!disabled"] if on and custom else ["disabled"])
+        for cmb in (self.cmb_preset, self.cmb_sound):
+            cmb.state(["!disabled", "readonly"] if on else ["disabled"])
+        for w in (self.lbl_pro_pitch, self.btn_buy, self.lnk_manage, self.lbl_locked):
+            w.pack_forget()
+        if on:
+            self.lnk_manage.pack(anchor="w", pady=(px(8), 0), before=self.pro_sep)
+            key = self.license.data["key"]
+            self.var_key.set("•••• " + key[-4:] if len(key) > 4 else key)
+            self.ent_key.state(["readonly"])
+        else:
+            self.lbl_pro_pitch.pack(fill="x", pady=(px(6), 0), before=self.keyrow)
+            self.btn_buy.pack(anchor="w", pady=(px(10), 0), before=self.keyrow)
+            self.lbl_locked.pack(anchor="w", pady=(0, px(6)), before=self.pro_grid)
+            self.ent_key.state(["!readonly"])
+        self._sync_filter_widgets()
+        if self._theme_applied:                      # after start-up: refresh texts and window size
+            self.apply_language()
+
+    def _open(self, url):
+        """Polar page; until the links are set in pro.py, an email to us instead of a dead button."""
+        if not url:
+            return self._mail("Pro")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    def _on_key(self):
+        if self.pro:
+            self.license.remove()
+            self.var_key.set("")
+            self._apply_pro()
+            return
+        key = self.var_key.get().strip()
+        if not key:
+            return
+        self.btn_key.state(["disabled"])
+        box = {}
+        threading.Thread(target=lambda: box.setdefault("r", self.license.set_key(key)), daemon=True).start()
+
+        def wait():                               # the check runs in the background, the window stays usable
+            if "r" not in box:
+                self.root.after(150, wait)
+                return
+            self.btn_key.state(["!disabled"])
+            if box["r"] is False:
+                messagebox.showerror("Breyek", self.t("pro_bad_key"))
+            elif box["r"] is None:
+                messagebox.showerror("Breyek", self.t("pro_offline"))
+            self._apply_pro()
+        wait()
+
+    def _go_pro(self):
+        self.tabs.select(self.tab_pro)
+
+    def _on_preset(self, event=None):
+        key = [*PRESETS, "custom"][self.cmb_preset.current()]
+        self.cfg["preset"] = key
+        if key in PRESETS:
+            for k, v in zip(("work_min", "break_min", "idle_min"), PRESETS[key]):
+                self.cfg[k] = v
+                self.time_vars[k].set(str(v))
+        save_config(self.cfg)
+        self.cmb_preset.selection_clear()
+        self._apply_pro()
+
+    def _on_times(self, event=None):
+        for key, var in self.time_vars.items():
+            digits = "".join(ch for ch in var.get() if ch.isdigit())
+            lo, hi = LIMITS[key]
+            self.cfg[key] = max(lo, min(hi, int(digits))) if digits else self.cfg[key]
+            var.set(str(self.cfg[key]))
+        save_config(self.cfg)
+        self._apply_pro()
+
+    def _on_hours(self, event=None):
+        for key, var in self.hour_vars.items():
+            digits = "".join(ch for ch in var.get() if ch.isdigit())
+            self.cfg[key] = max(0, min(23, int(digits))) if digits else self.cfg[key]
+            var.set(f"{self.cfg[key]:02d}")
+        save_config(self.cfg)
+
+    def _on_pro_check(self, key, var):
+        self.cfg[key] = bool(var.get())
+        save_config(self.cfg)
+        self._sync_filter_widgets()
+
+    def _on_sound(self, event=None):
+        self.cfg["sound"] = pro.SOUNDS[self.cmb_sound.current()]
+        save_config(self.cfg)
+        self.cmb_sound.selection_clear()
+        pro.play(self.cfg["sound"], CONFIG_DIR)          # a preview
+
+    def _stats_view(self, n):
+        if n != 7 and not self.pro:
+            return self._go_pro()
+        self.stats_n = n
+        self._draw_stats()
+
+    def _export_csv(self):
+        if not self.pro:
+            return self._go_pro()
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".csv", initialfile="breyek-stats.csv",
+                                            filetypes=[("CSV", "*.csv")])
+        if path:
+            try:
+                self.stats.export_csv(path)
+            except OSError as e:
+                messagebox.showerror("Breyek", str(e))
+
+    def _filter_scheduled(self):
+        if not (self.pro and self.cfg["filter_auto"]):
+            return False
+        a, b, h = self.cfg["filter_from"], self.cfg["filter_to"], time.localtime().tm_hour
+        return a <= h < b if a < b else (h >= a or h < b) if a > b else False
+
+    def _should_hold(self, now):
+        """Pro smart pause: no break during a call or a full-screen app, but never longer than 10 min."""
+        if not (self.pro and self.cfg["smart_pause"]):
+            return False
+        if self.hold_since is not None and now - self.hold_since >= HOLD_MAX_S:
+            return False
+        if now >= self._next_busy:
+            self._next_busy = now + 2.0
+            self._busy = self.fullscreen or pro.in_call()
+        return self._busy
+
+    def _snoozes_left(self):
+        today = datetime.date.today().isoformat()
+        if self.cfg["snooze_day"] != today:
+            self.cfg["snooze_day"], self.cfg["snooze_used"] = today, 0
+        return max(0, SNOOZES_PER_DAY - self.cfg["snooze_used"])
+
+    def _snooze(self):
+        if self.state is State.RUNNING and self._snoozes_left():
+            self.cfg["snooze_used"] += 1
+            save_config(self.cfg)
+            self.run_start += SNOOZE_S
+            self._log("SNOOZED 5 min")
+        self._toast(None)
+
+    def _toast(self, remaining):
+        """Pro: small card above the corner timer 30 s before a break, with a snooze button."""
+        if remaining is None:
+            if self.toast:
+                self.toast[0].destroy()
+                self.toast = None
+            return
+        c, px = self.c, self.px
+        if self.toast is None:
+            win = tk.Toplevel(self.root, bg=c["panel"], highlightthickness=1, highlightbackground=c["line"])
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            box = ttk.Frame(win, padding=(px(14), px(10)), style="Panel.TFrame")
+            box.pack()
+            lbl = ttk.Label(box, style="PanelStrong.TLabel")
+            lbl.pack(anchor="w")
+            btn = ttk.Button(box, style="Panel.TButton", command=self._snooze)
+            btn.pack(anchor="w", pady=(px(6), 0))
+            self.toast = (win, lbl, btn)
+        win, lbl, btn = self.toast
+        left = self._snoozes_left()
+        lbl.configure(text=self.t("break_soon", time=fmt(remaining)))
+        btn.configure(text=self.t("snooze_btn", n=left))
+        btn.state(["!disabled"] if left else ["disabled"])
+        win.update_idletasks()
+        l, t, r, b = get_work_area(self.root)
+        lift = (self.corner.win.winfo_height() + px(8)) if self.corner.visible else 0
+        win.geometry(f"+{r - win.winfo_reqwidth() - 12}+{b - win.winfo_reqheight() - 12 - lift}")
+        win.lift()
 
     def _on_media(self):
         self.cfg["pause_media"] = bool(self.var_media.get())
@@ -1281,8 +1669,9 @@ class BreyekApp:
         save_config(self.cfg)
 
     def _sync_filter_widgets(self):
+        on = self.var_filter.get() or (self.pro and self.cfg["filter_auto"])
         for w in (self.scale_w, self.spin_pct):
-            w.state(["!disabled"] if self.var_filter.get() else ["disabled"])
+            w.state(["!disabled"] if on else ["disabled"])
 
     def _on_filter(self):
         self.cfg["eye_filter"] = bool(self.var_filter.get())
@@ -1321,6 +1710,10 @@ class BreyekApp:
 
     def _on_theme(self, event=None):
         index = self.cmb_theme.current()
+        if 0 <= index < len(THEMES) and THEMES[index] in PRO_THEMES and not self.pro:
+            self.cmb_theme.current(THEMES.index(self.cfg["theme"]))
+            self.cmb_theme.selection_clear()
+            return self._go_pro()
         if 0 <= index < len(THEMES):
             self.cfg["theme"] = THEMES[index]
             save_config(self.cfg)
@@ -1357,7 +1750,7 @@ class BreyekApp:
                      font=(FONT_TXT, -self.px(12), "underline"))
         st.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
         st.configure("TNotebook.Tab", background=c["bg"], foreground=c["muted"], borderwidth=0,
-                     padding=(self.px(14), self.px(7)), lightcolor=c["bg"], bordercolor=c["bg"])
+                     padding=(self.px(9), self.px(7)), lightcolor=c["bg"], bordercolor=c["bg"])
         st.map("TNotebook.Tab", background=[("selected", c["panel"])], foreground=[("selected", c["fg"])],
                lightcolor=[("selected", c["panel"])], bordercolor=[("selected", c["panel"])],
                expand=[("selected", (0, 0, 0, 0))])
@@ -1373,6 +1766,8 @@ class BreyekApp:
         st.configure("Panel.TButton", background=c["bg"])          # a button inside a panel
         st.configure("Accent.TButton", background=c["accent"], foreground=c["accent_fg"], bordercolor=c["accent"])
         st.map("Accent.TButton", background=[("active", c["fg"])])
+        st.configure("LinkOn.TLabel", background=c["panel"], foreground=c["fg"], font=(FONT_TXT, -self.px(12), "bold"))
+        st.configure("Wrap.TCheckbutton", wraplength=self.px(380) - self.px(80))
         st.configure("PanelBrand.TLabel", background=c["panel"], foreground=c["fg"], font=(FONT_NUM, -self.px(20)))
         st.configure("TCombobox", background=c["bg"], foreground=c["fg"], arrowcolor=c["fg"],
                      fieldbackground=c["bg"], selectbackground=c["bg"], selectforeground=c["fg"],
@@ -1405,13 +1800,15 @@ class BreyekApp:
             self.sponsor_imgs.append(img)
             img_lbl.configure(image=img or "", text="" if img else name)
         self.corner.set_colors(c) if hasattr(self, "corner") else None
-        set_titlebar(self.root, name == "dark", c["bg"], c["fg"])
+        set_titlebar(self.root, name in DARK_THEMES, c["bg"], c["fg"])
 
     def _update_ui(self, now):
         if self.state is State.WAITING:
             status, secs, total = self.t("status_waiting"), self.work_s, self.work_s
         elif self.state is State.RUNNING:
             status, secs, total = self.t("status_running"), self.work_s - (now - self.run_start), self.work_s
+            if self.hold_since is not None:
+                status, secs = self.t("break_held"), 0
         else:
             status, secs, total = self.t("status_locked"), self.lock_end - now, self.break_s
         active = self.state is not State.WAITING
@@ -1517,11 +1914,15 @@ class BreyekApp:
         self.state = State.LOCKED
         now = time.monotonic()
         self.lock_end = now + self.break_s
-        self.next_tip_at = now
+        self.next_tip_at, self.ex_index, self.current_dot = now, 0, False
         self.corner.set_visible(False)
+        self._toast(None)
+        if self.pro:
+            pro.play(self.cfg["sound"], CONFIG_DIR)
         if self.cfg["pause_media"]:      # before the input blockers: the media key must get through
             self.media.pause(video_likely=now - self.last_screen < 5)
-        self.overlays = [Overlay(self.root, *m, self.t("break_title"), self.t("supported_by"), self.lang)
+        sponsor = None if self.pro else self.t("supported_by")        # Pro: no sponsors on the break screen
+        self.overlays = [Overlay(self.root, *m, self.t("break_title"), sponsor, self.lang)
                          for m in get_monitors(self.root)]
         self._start_blockers()
         self._log("LOCKED - input blocked")
@@ -1532,6 +1933,9 @@ class BreyekApp:
             o.close()
         self.overlays = []
         self.media.resume()
+        if self.pro:
+            pro.play(self.cfg["sound"], CONFIG_DIR, ending=True)
+        self.license.refresh(lambda: setattr(self, "_lic_dirty", True))
         if self.screen:
             self.screen.reset()          # the cover changed the screen: start fresh
         self.last_screen = 0.0
@@ -1554,11 +1958,24 @@ class BreyekApp:
         elif self.state is State.RUNNING:
             self.usage.add_active(step)
             self.stats.add(self._activity(now), step)
+            remaining = self.work_s - (now - self.run_start)
             if now - self.last_input >= self.idle_s:
+                self.hold_since = None
                 self._to_waiting(f"no input for {fmt(self.idle_s)}")
-            elif now - self.run_start >= self.work_s:
-                self._lock()
-        elif self.state is State.LOCKED:
+            elif remaining <= 0:
+                if self._should_hold(now):
+                    if self.hold_since is None:
+                        self.hold_since = now
+                        self._log("HOLD - call or full-screen app")
+                else:
+                    self.hold_since = None
+                    self._lock()
+        if self.state is State.RUNNING and self.pro and self.cfg["snooze"] and self.hold_since is None \
+                and 0 < self.work_s - (now - self.run_start) <= WARN_S:
+            self._toast(math.ceil(self.work_s - (now - self.run_start)))
+        elif self.toast:
+            self._toast(None)
+        if self.state is State.LOCKED:
             if self.emergency:
                 self._log("EMERGENCY EXIT")
                 self.quit()
@@ -1568,10 +1985,16 @@ class BreyekApp:
                 self._unlock()
             else:
                 if now >= self.next_tip_at:
-                    self.current_tip = random.choice(TIPS.get(self.lang) or TIPS["en"])
+                    if self.pro and self.cfg["exercises"]:          # Pro: guided exercises in order
+                        key = EXERCISES[self.ex_index % len(EXERCISES)]
+                        self.ex_index += 1
+                        self.current_tip, self.current_dot = self.t(key), key == "ex_dot"
+                    else:
+                        self.current_tip = random.choice(TIPS.get(self.lang) or TIPS["en"])
+                        self.current_dot = False
                     self.next_tip_at = now + TIP_ROTATE_SECONDS
                 for o in self.overlays:
-                    o.update(fmt(remaining), self.current_tip)
+                    o.update(fmt(remaining), self.current_tip, self.current_dot)
                     o.keep_on_top()
 
         if self.cfg["theme"] == "system" and now >= self._next_theme_check:
@@ -1579,8 +2002,12 @@ class BreyekApp:
             if self._resolved_theme() != self._theme_applied:
                 self.apply_theme()           # Windows switched between light and dark
 
+        if self._lic_dirty:                          # the daily license check finished in the background
+            self._lic_dirty = False
+            self._apply_pro()
         refreshed = self.eyefilter.update(
-            self.cfg["eye_filter"] and self.cfg["filter_strength"] > 0 and self.state is not State.LOCKED,
+            (self.cfg["eye_filter"] or self._filter_scheduled()) and self.cfg["filter_strength"] > 0
+            and self.state is not State.LOCKED,
             self.cfg["filter_strength"], now)
         if refreshed and self.corner.visible:
             self.corner.win.lift()           # keep the small timer above the tint
@@ -1602,6 +2029,7 @@ class BreyekApp:
             o.close()
         self.overlays = []
         self.stats.save()
+        self._toast(None)
         self.corner.close()
         self.eyefilter.close()
         self.root.quit()
@@ -1647,7 +2075,7 @@ class BreyekApp:
             self._update_share_state()
             d.destroy()
             self.root.deiconify()
-            self.root.after(150, lambda: set_titlebar(self.root, self._theme_applied == "dark", c["bg"], c["fg"]))
+            self.root.after(150, lambda: set_titlebar(self.root, self._theme_applied in DARK_THEMES, c["bg"], c["fg"]))
             self._start()
 
         ttk.Button(row, text=self.t("consent_agree"), style="Accent.TButton", command=agree).pack(side="right")
@@ -1656,10 +2084,11 @@ class BreyekApp:
         d.update_idletasks()
         w, h = d.winfo_reqwidth(), d.winfo_reqheight()
         d.geometry(f"+{(d.winfo_screenwidth() - w) // 2}+{(d.winfo_screenheight() - h) // 3}")
-        d.after(100, lambda: set_titlebar(d, self._theme_applied == "dark", c["panel"], c["fg"]))
+        d.after(100, lambda: set_titlebar(d, self._theme_applied in DARK_THEMES, c["panel"], c["fg"]))
         d.focus_force()
 
     def _start(self):
+        self.license.refresh(lambda: setattr(self, "_lic_dirty", True))
         self._log(f"Started. Work {fmt(self.work_s)}, idle reset {fmt(self.idle_s)}, break {fmt(self.break_s)}.")
         self.root.after(TICK_MS, self._tick)
 

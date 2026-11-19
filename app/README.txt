@@ -1,4 +1,4 @@
-Breyek 2.5.0 - akių pertraukų asistentas (be DI ir be mašininio mokymosi)
+Breyek 3.0.0 - akių pertraukų asistentas (be DI ir be mašininio mokymosi)
 
 Paleidimas iš kodo:  py -m pip install -r requirements.txt
                      py breyek.py           (20 min / 5 min / 1 min)
@@ -37,3 +37,20 @@ ekrano judėjimą. Saugoma %APPDATA%\Breyek-2.0\stats.json (60 dienų). Dienų s
 jei naudotojas įjungė dalijimąsi duomenimis.
 
 Kontaktai: breyek@protonmail.com (klaidos – [Bug], pagalba – [Support], rėmėjai ir partneriai – [Partner]).
+
+Breyek Pro (1,99 € / mėn. arba 15,99 € / metams, per Polar)
+- Pro: savi laikmačiai ir šablonai (20/1, 25/5, 50/10), išmani pauzė skambučių ir viso ekrano programų metu
+  (iki 10 min.), įspėjimas 30 s prieš pertrauką su atidėjimu (2 kartai per dieną), 30 dienų statistika ir
+  CSV eksportas (saugoma metus), vakarinis akių filtro grafikas, 3 papildomos temos, garsai, akių pratimai,
+  be rėmėjų pertraukos metu.
+- Kodas: pro.py. Kol POLAR_ORG_ID tuščias, veikia bandomasis raktas BREYEK-TEST-PRO.
+- Paleidžiant tikrai: pro.py užpildyti POLAR_ORG_ID, PRO_BUY_URL, PRO_PORTAL_URL (žr. žemiau).
+
+Polar paruošimas
+1. Susikurti paskyrą https://polar.sh (breyek@protonmail.com) ir organizaciją „Breyek“.
+2. Products -> New product „Breyek Pro“: kaina 1,99 € kas mėnesį. Antras produktas: 15,99 € kas metus.
+3. Abiem produktams Benefits -> License Keys (vienas ir tas pats benefit).
+4. Checkout Links -> nauja nuoroda su abiem produktais -> nukopijuoti į PRO_BUY_URL.
+5. Settings -> General: Organization ID -> į POLAR_ORG_ID. PRO_PORTAL_URL = https://polar.sh/<org-slug>/portal
+6. Pirmiausia viską išbandyti sandbox.polar.sh (netikri mokėjimai, pro.py: POLAR_SANDBOX = True),
+   tada tą patį padaryti tikroje polar.sh paskyroje ir grąžinti POLAR_SANDBOX = False.
