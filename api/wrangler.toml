@@ -1,0 +1,11 @@
+name = "breyek-api"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "breyek"
+database_id = "dccd2747-5f1e-4132-bedd-31ba8253738c"
+
+[triggers]
+crons = ["17 3 * * *"]       # every day at 03:17 UTC: delete rows older than 12 months

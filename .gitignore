@@ -1,0 +1,13 @@
+# build output
+app/build/
+app/dist/
+*.spec
+__pycache__/
+*.pyc
+# Cloudflare
+api/node_modules/
+api/.wrangler/
+api/.dev.vars
+*.log
+# local data and backups
+backup*.sql
